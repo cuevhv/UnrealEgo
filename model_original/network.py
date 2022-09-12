@@ -10,7 +10,6 @@ import torch.nn.functional as F
 from torch.optim import lr_scheduler
 from collections import OrderedDict
 import math
-import pdb
 
 
 ######################################################################################
@@ -241,7 +240,7 @@ class HeatMap_EgoGlass(nn.Module):
         self.after_backbone = HeatMap_EgoGlass_AfterBackbone(opt)
 
     def forward(self, input):
-
+        
         x = self.backbone(input)
         output = self.after_backbone(x)
 
@@ -271,7 +270,7 @@ class HeatMap_EgoGlass_Backbone(nn.Module):
         self.layer4 = self.base_layers[7]  # size=(N, 512, x.H/32, x.W/32)
 
     def forward(self, input):
-
+        
         layer0 = self.layer0(input)
         layer1 = self.layer1(layer0)
         layer2 = self.layer2(layer1)
@@ -348,10 +347,10 @@ class HeatMap_UnrealEgo_Shared(nn.Module):
         self.backbone = HeatMap_UnrealEgo_Shared_Backbone(opt, model_name=model_name)
         self.after_backbone = HeatMap_UnrealEgo_AfterBackbone(opt, model_name=model_name)
 
-    def forward(self, input_left):
+    def forward(self, input_left, input_right):
 
-        x_left = self.backbone(input_left)
-        output = self.after_backbone(x_left)
+        x_left, x_right = self.backbone(input_left, input_right)
+        output = self.after_backbone(x_left, x_right)
 
         return output
 
@@ -362,11 +361,11 @@ class HeatMap_UnrealEgo_Shared_Backbone(nn.Module):
 
         self.backbone = Encoder_Block(opt, model_name=model_name)
 
-    def forward(self, input_left):
+    def forward(self, input_left, input_right):
         output_left = self.backbone(input_left)
-        # output_right = self.backbone(input_right)
+        output_right = self.backbone(input_right)
 
-        return output_left #, output_right
+        return output_left, output_right
 
 class Encoder_Block(nn.Module):
     def __init__(self, opt, model_name='resnet18'):
@@ -391,7 +390,7 @@ class Encoder_Block(nn.Module):
         self.layer4 = self.base_layers[7]  # size=(N, 512, x.H/32, x.W/32)
 
     def forward(self, input):
-
+        
         layer0 = self.layer0(input)
         layer1 = self.layer1(layer0)
         layer2 = self.layer2(layer1)
@@ -421,21 +420,23 @@ class HeatMap_UnrealEgo_AfterBackbone(nn.Module):
         self.num_heatmap = opt.num_heatmap
 
         # self.layer0_1x1 = convrelu(128, 128, 1, 0)
-        self.layer1_1x1 = convrelu(128//2 * feature_scale, 128//2 * feature_scale, 1, 0)
-        self.layer2_1x1 = convrelu(256//2 * feature_scale, 256//2 * feature_scale, 1, 0)
-        self.layer3_1x1 = convrelu(512//2 * feature_scale, 516//2 * feature_scale, 1, 0)
-        self.layer4_1x1 = convrelu(1024//2 * feature_scale, 1024//2 * feature_scale, 1, 0)
+        self.layer1_1x1 = convrelu(128 * feature_scale, 128 * feature_scale, 1, 0)
+        self.layer2_1x1 = convrelu(256 * feature_scale, 256 * feature_scale, 1, 0)
+        self.layer3_1x1 = convrelu(512 * feature_scale, 516 * feature_scale, 1, 0)
+        self.layer4_1x1 = convrelu(1024 * feature_scale, 1024 * feature_scale, 1, 0)
 
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
 
-        self.conv_up3 = convrelu(1024//2 * feature_scale, 1024//2 * feature_scale, 3, 1)
-        self.conv_up2 = convrelu(1024//2 * feature_scale, 512//2 * feature_scale, 3, 1)
-        self.conv_up1 = convrelu(512//2 * feature_scale, 512//2 * feature_scale, 3, 1)
+        self.conv_up3 = convrelu(516 * feature_scale + 1024 * feature_scale, 1024 * feature_scale, 3, 1)
+        self.conv_up2 = convrelu(256 * feature_scale + 1024 * feature_scale, 512 * feature_scale, 3, 1)
+        self.conv_up1 = convrelu(128 * feature_scale + 512 * feature_scale, 512 * feature_scale, 3, 1)
 
-        self.conv_heatmap = nn.Conv2d(512//2 * feature_scale, self.num_heatmap, 1)
+        self.conv_heatmap = nn.Conv2d(512 * feature_scale, self.num_heatmap * 2, 1)
 
-    def forward(self, list_input_left):
-        list_stereo_feature = list_input_left
+    def forward(self, list_input_left, list_input_right):
+        list_stereo_feature = [
+            torch.cat([list_input_left[id], list_input_right[id]], dim=1) for id in range(len(list_input_left))
+        ]
 
         input = list_stereo_feature[0]
         layer0 = list_stereo_feature[1]
@@ -446,18 +447,18 @@ class HeatMap_UnrealEgo_AfterBackbone(nn.Module):
 
         layer4 = self.layer4_1x1(layer4)
         x = self.upsample(layer4)
-        # layer3 = self.layer3_1x1(layer3)
-        # x = torch.cat([x, layer3], dim=1)
+        layer3 = self.layer3_1x1(layer3)
+        x = torch.cat([x, layer3], dim=1)
         x = self.conv_up3(x)
 
         x = self.upsample(x)
-        # layer2 = self.layer2_1x1(layer2)
-        # x = torch.cat([x, layer2], dim=1)
+        layer2 = self.layer2_1x1(layer2)
+        x = torch.cat([x, layer2], dim=1)
         x = self.conv_up2(x)
 
         x = self.upsample(x)
-        # layer1 = self.layer1_1x1(layer1)
-        # x = torch.cat([x, layer1], dim=1)
+        layer1 = self.layer1_1x1(layer1)
+        x = torch.cat([x, layer1], dim=1)
         x = self.conv_up1(x)
 
         output = self.conv_heatmap(x)
@@ -500,14 +501,14 @@ class AutoEncoder(nn.Module):
         self.heatmap_fc2 = make_fc_layer(512, 2048, with_bn=self.with_bn)
         # self.heatmap_fc3 = make_fc_layer(2048, 18432, with_bn=self.with_bn)
         self.heatmap_fc3 = make_fc_layer(2048, self.fc_dim, with_bn=self.with_bn)
-        self.WH = int(math.sqrt(self.fc_dim/256))
+        self.WH = int(math.sqrt(self.fc_dim/256))  
 
         self.deconv1 = make_deconv_layer(256, 128, kernel_size=4, stride=2, padding=1, with_bn=self.with_bn)
         self.deconv2 = make_deconv_layer(128, 64, kernel_size=4, stride=2, padding=1, with_bn=self.with_bn)
         self.deconv3 = make_deconv_layer(64, self.channels_heatmap, kernel_size=4, stride=2, padding=1, with_bn=self.with_bn)
 
     def predict_pose(self, input):
-        batch_size = input.size()[0]
+        batch_size = input.size()[0]    
 
         # encode heatmap
         x = self.conv1(input)
@@ -547,7 +548,7 @@ class AutoEncoder(nn.Module):
         # decode heatmap
         x_hm = self.heatmap_fc1(z)
         x_hm = self.heatmap_fc2(x_hm)
-        x_hm = self.heatmap_fc3(x_hm)
+        x_hm = self.heatmap_fc3(x_hm) 
         x_hm = x_hm.view(batch_size, 256, self.WH, self.WH)
         x_hm = self.deconv1(x_hm)
         x_hm = self.deconv2(x_hm)
@@ -559,20 +560,12 @@ class AutoEncoder(nn.Module):
 
 
 if __name__ == "__main__":
-
-    import sys
-    sys.path.insert(1, 'E:/internship/egopose/UnrealEgo')
-    from options.train_options import TrainOptions
-
-
-    opt = TrainOptions().parse()
-    opt.init_ImageNet = True
-    model_heatmap = HeatMap_UnrealEgo_Shared(opt=opt, model_name='resnet50')
-    model_autoencoder = AutoEncoder(opt=opt, input_channel_scale=1)
+    
+    model = HeatMap_UnrealEgo_Shared(opt=None, model_name='resnet50')
 
     input = torch.rand(3, 3, 256, 256)
-    pred_heatmap_left = model_heatmap(input)
-    pred_pose, pred_heatmap_left_rec = model_autoencoder(pred_heatmap_left)
+    outputs = model(input, input)
+    pred_heatmap_left, pred_heatmap_right = torch.chunk(outputs, 2, dim=1)
 
-    print("encoder heatmap:", pred_heatmap_left.size())
-    print("pose", pred_pose.size(), "decoder heatmap", pred_heatmap_left_rec.size())
+    print(pred_heatmap_left.size())
+    print(pred_heatmap_right.size())
