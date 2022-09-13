@@ -225,6 +225,12 @@ def convrelu(in_channels, out_channels, kernel, padding):
         nn.ReLU(inplace=True),
     )
 
+def deconvrelu(in_channels, out_channels, kernel, padding, stride):
+    return nn.Sequential(
+        nn.ConvTranspose2d(in_channels, out_channels, kernel, padding=padding, stride=stride),
+        nn.ReLU(inplace=True),
+    )
+
 ######################################################################################
 # Network structure
 ######################################################################################
@@ -443,7 +449,7 @@ class HeatMap_UnrealEgo_AfterBackbone(nn.Module):
         layer2 = list_stereo_feature[3]
         layer3 = list_stereo_feature[4]
         layer4 = list_stereo_feature[5]
-
+        pdb.set_trace()
         layer4 = self.layer4_1x1(layer4)
         x = self.upsample(layer4)
         # layer3 = self.layer3_1x1(layer3)
@@ -470,7 +476,7 @@ class HeatMap_UnrealEgo_AfterBackbone(nn.Module):
 
 class AutoEncoder(nn.Module):
 
-    def __init__(self, opt, input_channel_scale=1, fc_dim=16384):
+    def __init__(self, opt, input_channel_scale=1, z_h=8, z_w=8): #16384
         super(AutoEncoder, self).__init__()
 
         self.hidden_size = opt.ae_hidden_size
@@ -479,7 +485,9 @@ class AutoEncoder(nn.Module):
 
         self.num_heatmap = opt.num_heatmap
         self.channels_heatmap = self.num_heatmap * input_channel_scale
-        self.fc_dim = fc_dim
+
+        # change this based on the flatten values
+        self.fc_dim = z_h*z_w*256
 
         self.conv1 = make_conv_layer(in_channels=self.channels_heatmap, out_channels=64, kernel_size=4, stride=2, padding=1, with_bn=self.with_bn)
         self.conv2 = make_conv_layer(in_channels=64, out_channels=128, kernel_size=4, stride=2, padding=1, with_bn=self.with_bn)
@@ -500,7 +508,9 @@ class AutoEncoder(nn.Module):
         self.heatmap_fc2 = make_fc_layer(512, 2048, with_bn=self.with_bn)
         # self.heatmap_fc3 = make_fc_layer(2048, 18432, with_bn=self.with_bn)
         self.heatmap_fc3 = make_fc_layer(2048, self.fc_dim, with_bn=self.with_bn)
-        self.WH = int(math.sqrt(self.fc_dim/256))
+        # self.WH = int(math.sqrt(self.fc_dim/256))
+        self.z_h = z_h
+        self.z_w = z_w
 
         self.deconv1 = make_deconv_layer(256, 128, kernel_size=4, stride=2, padding=1, with_bn=self.with_bn)
         self.deconv2 = make_deconv_layer(128, 64, kernel_size=4, stride=2, padding=1, with_bn=self.with_bn)
@@ -534,25 +544,31 @@ class AutoEncoder(nn.Module):
         x = self.conv1(input)
         x = self.conv2(x)
         x = self.conv3(x)
+        pdb.set_trace()
         x = x.view(batch_size, -1)
+
+        # fc1 changes based on the flatten values
         x = self.fc1(x)
         x = self.fc2(x)
         z = self.fc3(x)
+        pdb.set_trace()
 
         # decode pose
         x_pose = self.pose_fc1(z)
         x_pose = self.pose_fc2(x_pose)
         output_pose = self.pose_fc3(x_pose)
+        pdb.set_trace()
 
         # decode heatmap
         x_hm = self.heatmap_fc1(z)
         x_hm = self.heatmap_fc2(x_hm)
         x_hm = self.heatmap_fc3(x_hm)
-        x_hm = x_hm.view(batch_size, 256, self.WH, self.WH)
+        x_hm = x_hm.view(batch_size, 256, self.z_h, self.z_w)
         x_hm = self.deconv1(x_hm)
         x_hm = self.deconv2(x_hm)
         output_hm = self.deconv3(x_hm)
 
+        pdb.set_trace()
         return output_pose.view(batch_size, self.num_heatmap + 1, 3), output_hm
 
 
@@ -568,11 +584,13 @@ if __name__ == "__main__":
     opt = TrainOptions().parse()
     opt.init_ImageNet = True
     model_heatmap = HeatMap_UnrealEgo_Shared(opt=opt, model_name='resnet50')
-    model_autoencoder = AutoEncoder(opt=opt, input_channel_scale=1)
+    model_autoencoder = AutoEncoder(opt=opt, input_channel_scale=1, z_h=12, z_w=12)# , z_h=9, z_w=15) #34560
 
-    input = torch.rand(3, 3, 256, 256)
+    # input = torch.rand(3, 3, 256, 256)
+    # input = torch.rand(3, 3, 270, 480)
+    input = torch.rand(3, 3, 368, 368)
     pred_heatmap_left = model_heatmap(input)
-    pred_pose, pred_heatmap_left_rec = model_autoencoder(pred_heatmap_left)
-
     print("encoder heatmap:", pred_heatmap_left.size())
+
+    pred_pose, pred_heatmap_left_rec = model_autoencoder(pred_heatmap_left)
     print("pose", pred_pose.size(), "decoder heatmap", pred_heatmap_left_rec.size())
